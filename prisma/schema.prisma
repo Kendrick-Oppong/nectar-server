@@ -1,0 +1,672 @@
+// ============================================================
+//  Nectar — Online Grocery App
+//  Prisma Schema (PostgreSQL)
+//  Auth: Passwordless Email OTP + Google / Facebook OAuth
+// ============================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+  moduleFormat    = "cjs"
+
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────
+//  ENUMS
+// ─────────────────────────────────────────────────────────────
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum DeliveryMethod {
+  STANDARD
+  EXPRESS
+}
+
+enum PaymentType {
+  CARD
+  MOBILE_MONEY
+  CASH_ON_DELIVERY
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum NotificationType {
+  ORDER_UPDATE
+  PROMO
+  GENERAL
+}
+
+// ─────────────────────────────────────────────────────────────
+//  AUTH
+// ─────────────────────────────────────────────────────────────
+
+/// Core user record — no password stored (passwordless auth)
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+
+  /// Display name collected after first login
+  name              String?
+  avatarUrl         String?
+  phone             String?  @unique
+
+  isActive          Boolean  @default(true)
+
+  /// False until name + location setup is completed (new users only)
+  isProfileComplete Boolean  @default(false)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // ── Relations ──
+  oauthAccounts     OAuthAccount[]
+  refreshTokens     RefreshToken[]
+
+  addresses         Address[]
+
+  selectedZoneId    String?
+  selectedAreaId    String?
+  zone              Zone?    @relation("UserZone", fields: [selectedZoneId], references: [id])
+  area              Area?    @relation("UserArea", fields: [selectedAreaId], references: [id])
+
+  cart              Cart?
+  orders            Order[]
+  favourites        Favourite[]
+  reviews           Review[]
+  paymentMethods    PaymentMethod[]
+  promoCodes        UserPromoCode[]
+  notifications     Notification[]
+  pushTokens        PushToken[]
+
+  @@map("users")
+}
+
+/// Email OTP codes — one active record per email at a time
+model OtpCode {
+  id        String   @id @default(cuid())
+
+  /// Target inbox
+  email     String
+
+  /// bcrypt hash of the 6-digit code
+  code      String
+
+  expiresAt DateTime
+  used      Boolean  @default(false)
+
+  /// Incremented on each wrong attempt; locked at 5
+  attempts  Int      @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@map("otp_codes")
+}
+
+/// Linked social provider accounts (one user can have multiple)
+model OAuthAccount {
+  id            String   @id @default(cuid())
+
+  /// "google" | "facebook"
+  provider      String
+
+  /// Unique ID from the provider
+  providerId    String
+
+  /// Email returned by the provider (may differ from user.email)
+  providerEmail String?
+
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime @default(now())
+
+  @@unique([provider, providerId])
+  @@map("oauth_accounts")
+}
+
+/// Refresh token store — supports rotation and family-based revocation
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// bcrypt hash of the raw token
+  token     String   @unique
+
+  /// Rotation family ID — reuse of a token in this family revokes all siblings
+  family    String
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  LOCATION
+// ─────────────────────────────────────────────────────────────
+
+/// Delivery zones (e.g. "Banasree", "Gulshan")
+model Zone {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+
+  areas     Area[]
+  users     User[]   @relation("UserZone")
+
+  createdAt DateTime @default(now())
+
+  @@map("zones")
+}
+
+/// Sub-areas within a zone
+model Area {
+  id        String   @id @default(cuid())
+  name      String
+  zoneId    String
+  zone      Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+
+  users     User[]   @relation("UserArea")
+  addresses Address[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([name, zoneId])
+  @@map("areas")
+}
+
+/// Saved delivery addresses per user
+model Address {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// "Home" | "Work" | "Other"
+  label       String   @default("Home")
+
+  streetLine1 String
+  streetLine2 String?
+
+  areaId      String?
+  area        Area?    @relation(fields: [areaId], references: [id])
+
+  city        String
+  latitude    Float?
+  longitude   Float?
+
+  isDefault   Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orders      Order[]
+
+  @@map("addresses")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CATALOGUE
+// ─────────────────────────────────────────────────────────────
+
+/// Self-referencing category tree (supports sub-categories)
+model Category {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  slug      String     @unique
+
+  /// Card background colour (hex)
+  color     String?
+
+  imageUrl  String?
+
+  parentId  String?
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+
+  products  Product[]
+
+  sortOrder Int        @default(0)
+  isActive  Boolean    @default(true)
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("categories")
+}
+
+/// Product brands (used in the filters screen)
+model Brand {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  logoUrl   String?
+  isActive  Boolean   @default(true)
+
+  products  Product[]
+
+  createdAt DateTime  @default(now())
+
+  @@map("brands")
+}
+
+/// Core product record
+model Product {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  description  String?
+
+  categoryId   String
+  category     Category @relation(fields: [categoryId], references: [id])
+
+  brandId      String?
+  brand        Brand?   @relation(fields: [brandId], references: [id])
+
+  /// Selling price
+  price        Decimal  @db.Decimal(10, 2)
+
+  /// Original price shown as crossed-out when on sale
+  comparePrice Decimal? @db.Decimal(10, 2)
+
+  /// Display unit, e.g. "1kg", "250gm", "4pcs", "2L", "325ml"
+  unit         String
+
+  stock        Int      @default(0)
+  isActive     Boolean  @default(true)
+
+  /// Appears in "Exclusive Offer" section on Home
+  isFeatured   Boolean  @default(false)
+
+  /// Appears in "Best Selling" section on Home
+  isBestSeller Boolean  @default(false)
+
+  /// Denormalised from reviews for fast reads
+  averageRating Float   @default(0)
+  reviewCount   Int     @default(0)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  images       ProductImage[]
+  nutrition    ProductNutrition?
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  favourites   Favourite[]
+  reviews      Review[]
+
+  @@map("products")
+}
+
+/// Ordered product images (first isPrimary image shown as the hero)
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  url       String
+  sortOrder Int      @default(0)
+  isPrimary Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@map("product_images")
+}
+
+/// Optional nutrition facts panel (per 100g serving)
+model ProductNutrition {
+  id            String   @id @default(cuid())
+  productId     String   @unique
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  servingSize   String   @default("100g")
+
+  calories      Float?
+  protein       Float?
+  carbohydrates Float?
+  fat           Float?
+  fiber         Float?
+  sugar         Float?
+  sodium        Float?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("product_nutrition")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BANNERS  (Home screen carousel)
+// ─────────────────────────────────────────────────────────────
+
+model Banner {
+  id          String    @id @default(cuid())
+  title       String
+  subtitle    String?
+  imageUrl    String
+
+  /// "category" | "product" | "url"
+  actionType  String?
+
+  /// categoryId, productId, or external URL depending on actionType
+  actionValue String?
+
+  sortOrder   Int       @default(0)
+  isActive    Boolean   @default(true)
+
+  startsAt    DateTime?
+  endsAt      DateTime?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("banners")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CART
+// ─────────────────────────────────────────────────────────────
+
+/// One cart per user (server-side, persists across devices)
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  items     CartItem[]
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+
+  quantity  Int      @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, productId])
+  @@map("cart_items")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  ORDERS
+// ─────────────────────────────────────────────────────────────
+
+model Order {
+  id            String         @id @default(cuid())
+
+  /// Human-readable ref, e.g. "ORD-20240314-0042"
+  orderNumber   String         @unique
+
+  userId        String
+  user          User           @relation(fields: [userId], references: [id])
+
+  addressId     String
+  address       Address        @relation(fields: [addressId], references: [id])
+
+  items         OrderItem[]
+
+  subtotal      Decimal        @db.Decimal(10, 2)
+  deliveryFee   Decimal        @db.Decimal(10, 2) @default(0)
+
+  /// Amount discounted by promo code
+  discount      Decimal        @db.Decimal(10, 2) @default(0)
+
+  total         Decimal        @db.Decimal(10, 2)
+
+  deliveryMethod DeliveryMethod @default(STANDARD)
+
+  status        OrderStatus    @default(PENDING)
+  paymentStatus PaymentStatus  @default(UNPAID)
+
+  paymentMethodId String?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+
+  promoCodeId   String?
+  promoCode     PromoCode?     @relation(fields: [promoCodeId], references: [id])
+
+  notes         String?
+
+  estimatedAt   DateTime?
+  deliveredAt   DateTime?
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([userId])
+  @@map("orders")
+}
+
+/// Price + name snapshot taken at the moment the order is placed
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+
+  /// Snapshot — survives product edits or deletions
+  productName String
+  productUnit String
+  unitPrice   Decimal  @db.Decimal(10, 2)
+
+  quantity    Int
+  total       Decimal  @db.Decimal(10, 2)
+
+  @@map("order_items")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PAYMENTS
+// ─────────────────────────────────────────────────────────────
+
+model PaymentMethod {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type         PaymentType
+
+  /// Display label, e.g. "Mastercard ••4242"
+  label        String
+
+  isDefault    Boolean     @default(false)
+
+  /// Payment gateway token (never store raw card numbers)
+  gatewayToken String?
+
+  lastFour     String?
+  expiryMonth  Int?
+  expiryYear   Int?
+
+  /// "visa" | "mastercard" | "amex" etc.
+  cardBrand    String?
+
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  orders       Order[]
+
+  @@map("payment_methods")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  PROMO CODES
+// ─────────────────────────────────────────────────────────────
+
+model PromoCode {
+  id            String       @id @default(cuid())
+  code          String       @unique
+  description   String?
+
+  discountType  DiscountType
+
+  /// Percentage value (0–100) or fixed currency amount
+  discountValue Decimal      @db.Decimal(10, 2)
+
+  /// Minimum basket value required to apply
+  minOrderValue Decimal?     @db.Decimal(10, 2)
+
+  /// Cap on the maximum discount amount (useful for % codes)
+  maxDiscount   Decimal?     @db.Decimal(10, 2)
+
+  /// null = unlimited
+  usageLimit    Int?
+  usageCount    Int          @default(0)
+
+  /// Whether the code can be used by a single user only once
+  singleUsePerUser Boolean   @default(true)
+
+  isActive      Boolean      @default(true)
+
+  startsAt      DateTime?
+  endsAt        DateTime?
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  orders        Order[]
+  userCodes     UserPromoCode[]
+
+  @@map("promo_codes")
+}
+
+/// Junction tracking which users have redeemed which codes
+model UserPromoCode {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id])
+
+  /// Null until the code is actually applied to an order
+  usedAt      DateTime?
+
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, promoCodeId])
+  @@map("user_promo_codes")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  FAVOURITES
+// ─────────────────────────────────────────────────────────────
+
+model Favourite {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@map("favourites")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  REVIEWS
+// ─────────────────────────────────────────────────────────────
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// 1–5 stars
+  rating    Int
+
+  comment   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One review per user per product
+  @@unique([userId, productId])
+  @@map("reviews")
+}
+
+// ─────────────────────────────────────────────────────────────
+//  NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type      NotificationType
+
+  title     String
+  body      String
+
+  /// Arbitrary payload, e.g. { "orderId": "clx..." }
+  data      Json?
+
+  isRead    Boolean          @default(false)
+
+  createdAt DateTime         @default(now())
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+/// Expo / FCM push tokens — one device can have one token
+model PushToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// ExponentPushToken[xxx] or FCM token
+  token     String   @unique
+
+  /// "ios" | "android"
+  platform  String
+
+  createdAt DateTime @default(now())
+
+  @@map("push_tokens")
+}

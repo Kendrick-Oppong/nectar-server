@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +16,8 @@ import type { UserType } from 'types/auth';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -45,7 +49,6 @@ export class AuthService {
 
     const tokens = await this.generateTokens(user.id);
 
-    // Explicitly exclude passwords and internal fields for React Native client
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password, failedLoginAttempts, lockedUntil, ...safeUser } = user;
 
@@ -63,18 +66,17 @@ export class AuthService {
 
     if (!user) return null;
 
-    // 1. Check if Account is Locked
+    // 1. Check if account is locked
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       throw new UnauthorizedException(
         'Account temporarily locked due to many failed login attempts. Please try again later.',
       );
     }
 
-    // 2. Validate Password
+    // 2. Validate password
     const isPasswordValid = await bcrypt.compare(pass, user.password);
 
     if (!isPasswordValid) {
-      // Increment failed attempts
       const newAttempts: number = Number(user.failedLoginAttempts) + 1;
 
       const updateData: { failedLoginAttempts: number; lockedUntil?: Date } = {
@@ -82,7 +84,6 @@ export class AuthService {
       };
 
       if (newAttempts >= 5) {
-        // Lock out for 15 minutes
         const lockTime = new Date();
         lockTime.setMinutes(lockTime.getMinutes() + 15);
         updateData.lockedUntil = lockTime;
@@ -96,7 +97,7 @@ export class AuthService {
       return null;
     }
 
-    // 3. Password valid, clear any previous failures
+    // 3. Password valid — clear any previous failures
     if (user.failedLoginAttempts > 0 || user.lockedUntil) {
       await this.prisma.user.update({
         where: { id: user.id },
@@ -124,28 +125,29 @@ export class AuthService {
   }
 
   /**
-   * Initiate Forgot Password flow - generate trackable token and email it out
+   * Initiate forgot password flow — generate a trackable token and email it out
    */
   async forgotPassword(email: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
+
     if (!user) {
-      // Do not reveal whether user exists for security, just return success
+      // Do not reveal whether the user exists — always return the same response
       return {
         success: true,
         message: 'If an account exists, a reset link was sent.',
       };
     }
 
-    // Invalidate old tokens
+    // Invalidate any existing active tokens for this user
     await this.prisma.passwordResetToken.updateMany({
       where: { userId: user.id, used: false },
       data: { used: true },
     });
 
-    const token = crypto.randomBytes(32).toString('hex');
-    const hashedToken = await bcrypt.hash(token, 10);
+    const code = crypto.randomInt(100000, 999999).toString();
+    const hashedToken = await bcrypt.hash(code, 10);
 
-    // 15 min expiration
+    // 15-minute expiration
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 15);
 
@@ -157,7 +159,17 @@ export class AuthService {
       },
     });
 
-    await this.emailService.sendPasswordResetEmail(email, token);
+    const emailSent = await this.emailService.sendPasswordResetEmail(
+      email,
+      code,
+    );
+
+    if (!emailSent) {
+      this.logger.error(`Password reset email failed to send to ${email}`);
+      throw new InternalServerErrorException(
+        'Failed to send reset email. Please try again later.',
+      );
+    }
 
     return {
       success: true,
@@ -166,15 +178,12 @@ export class AuthService {
   }
 
   /**
-   * Complete Forgot Password flow - swap out the old password securely
+   * Complete forgot password flow — validate token and update password
    */
   async resetPassword(token: string, newPassword: string) {
-    // We expect the raw hex token to be passed from the email link
-    // We must find the record by comparing hashes (though normally one would pass an ID query param too. For simplicity, we search active tokens and compare).
-
-    // Performance Note: Searching through all active tokens and bcrypt.comparing is slow and theoretically susceptible to timing attacks.
-    // Usually a reset link is `?id=TOKEN_ID&token=RAW_TOKEN`.
-    // Assuming low traffic for grocery app reset passwords, we will search active ones.
+    // Performance note: searching all active tokens and bcrypt-comparing is intentional
+    // for this low-traffic use case. In high-traffic scenarios, include a token ID
+    // in the reset link and query by ID directly (e.g. ?id=TOKEN_ID&token=RAW_TOKEN).
     const activeTokens: PasswordResetToken[] =
       await this.prisma.passwordResetToken.findMany({
         where: { used: false, expiresAt: { gt: new Date() } },
@@ -212,10 +221,9 @@ export class AuthService {
   }
 
   /**
-   * Logout a user - revoke their active refresh token
+   * Logout a user — revoke their active refresh token
    */
   async logout(refreshToken: string) {
-    // To find the exact refresh token to revoke, we need to compare hashes
     const activeTokens: RefreshToken[] =
       await this.prisma.refreshToken.findMany();
 
@@ -233,12 +241,12 @@ export class AuthService {
       });
     }
 
-    // Always return success even if not found to prevent timing attacks / token scanning
+    // Always return success to prevent timing attacks / token scanning
     return { success: true, message: 'Logged out successfully.' };
   }
 
   /**
-   * Generates a new pair of JWT Access and Refresh tokens.
+   * Generate a new JWT access + refresh token pair
    */
   async generateTokens(userId: string) {
     const [accessToken, refreshToken] = await Promise.all([
@@ -258,11 +266,10 @@ export class AuthService {
       ),
     ]);
 
-    // Save refresh token to DB with family for rotation handling
     const hashedToken = await bcrypt.hash(refreshToken, 10);
     const family = crypto.randomBytes(16).toString('hex');
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days
+    expiresAt.setDate(expiresAt.getDate() + 30);
 
     await this.prisma.refreshToken.create({
       data: {
@@ -280,7 +287,7 @@ export class AuthService {
   }
 
   /**
-   * Validates a refresh token and issues a new pair if valid (Token Rotation).
+   * Validate a refresh token and issue a new token pair (token rotation)
    */
   async refreshTokens(refreshToken: string) {
     let payload: { sub: string };
@@ -288,7 +295,7 @@ export class AuthService {
       payload = await this.jwtService.verifyAsync<{ sub: string }>(
         refreshToken,
         {
-          secret: process.env.JWT_REFRESH_SECRET,
+          secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
         },
       );
     } catch {
@@ -297,7 +304,6 @@ export class AuthService {
 
     const userId: string = payload.sub;
 
-    // Retrieve active tokens for user
     const tokens: RefreshToken[] = await this.prisma.refreshToken.findMany({
       where: { userId },
     });
@@ -323,7 +329,7 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token expired.');
     }
 
-    // Successful match. Token rotation: revoke old token (or whole family if we were strictly enforcing 1 active), issue new.
+    // Token rotation: delete the used token and issue a fresh pair
     await this.prisma.refreshToken.delete({
       where: { id: matchedTokenRecord.id },
     });

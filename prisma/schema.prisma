@@ -62,10 +62,13 @@ enum NotificationType {
 //  AUTH
 // ─────────────────────────────────────────────────────────────
 
-/// Core user record — no password stored (passwordless auth)
+/// Core user record
 model User {
   id                String   @id @default(cuid())
   email             String   @unique
+
+  /// Bcrypt hashed password
+  password          String
 
   /// Display name collected after first login
   name              String?
@@ -77,12 +80,16 @@ model User {
   /// False until name + location setup is completed (new users only)
   isProfileComplete Boolean  @default(false)
 
+  /// Brute-force protection
+  failedLoginAttempts Int      @default(0)
+  lockedUntil       DateTime?
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
   // ── Relations ──
-  oauthAccounts     OAuthAccount[]
-  refreshTokens     RefreshToken[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   addresses         Address[]
 
@@ -103,48 +110,22 @@ model User {
   @@map("users")
 }
 
-/// Email OTP codes — one active record per email at a time
-model OtpCode {
+/// Secure token for handling forgotten passwords
+model PasswordResetToken {
   id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  /// Target inbox
-  email     String
-
-  /// bcrypt hash of the 6-digit code
-  code      String
+  /// secure hex token
+  token     String   @unique
 
   expiresAt DateTime
   used      Boolean  @default(false)
 
-  /// Incremented on each wrong attempt; locked at 5
-  attempts  Int      @default(0)
-
   createdAt DateTime @default(now())
 
-  @@index([email])
-  @@map("otp_codes")
-}
-
-/// Linked social provider accounts (one user can have multiple)
-model OAuthAccount {
-  id            String   @id @default(cuid())
-
-  /// "google" | "facebook"
-  provider      String
-
-  /// Unique ID from the provider
-  providerId    String
-
-  /// Email returned by the provider (may differ from user.email)
-  providerEmail String?
-
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  createdAt     DateTime @default(now())
-
-  @@unique([provider, providerId])
-  @@map("oauth_accounts")
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 /// Refresh token store — supports rotation and family-based revocation

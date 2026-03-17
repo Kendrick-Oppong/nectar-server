@@ -22,7 +22,6 @@ export class EmailService {
 
   async sendPasswordResetEmail(to: string, code: string): Promise<boolean> {
     try {
-      // While we focus on the code for mobile, we keep a link as a fallback
       await this.transporter.sendMail({
         from:
           this.configService.get<string>('FROM_EMAIL') || 'no-reply@nectar.com',

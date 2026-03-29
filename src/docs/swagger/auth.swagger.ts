@@ -1,10 +1,19 @@
 import { applyDecorators } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
-import { LoginDto } from '../../auth/dto/login.dto';
+import {
+  ApiOperation,
+  ApiResponse,
+  ApiBody,
+  ApiTags,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import { LoginDto } from 'src/auth/dto/login.dto';
+import { RegisterDto } from 'src/auth/dto/register.dto';
 
+export const AuthApiTags = ApiTags('Authentication');
 export function RegisterDocs() {
   return applyDecorators(
     ApiOperation({ summary: 'Register a new user' }),
+    ApiBody({ type: RegisterDto }),
     ApiResponse({
       status: 201,
       description: 'User registered successfully, tokens issued.',

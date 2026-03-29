@@ -14,7 +14,6 @@ import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { ApiTags } from '@nestjs/swagger';
 import type { RequestWithUser } from 'types/auth';
 import {
   RegisterDocs,
@@ -23,10 +22,11 @@ import {
   ResetPasswordDocs,
   LogoutDocs,
   RefreshTokensDocs,
+  AuthApiTags,
 } from '../docs/swagger/auth.swagger';
 import { Public } from '../common/decorators/public.decorator';
 
-@ApiTags('Authentication')
+@AuthApiTags
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}

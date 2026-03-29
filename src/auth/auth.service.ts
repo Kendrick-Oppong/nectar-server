@@ -69,7 +69,7 @@ export class AuthService {
     // 1. Check if account is locked
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       throw new UnauthorizedException(
-        'Account temporarily locked due to many failed login attempts. Please try again later.',
+        'Account locked due to failed attempts. Try again later',
       );
     }
 

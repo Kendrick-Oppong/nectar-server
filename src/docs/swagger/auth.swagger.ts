@@ -4,7 +4,7 @@ import {
   ApiResponse,
   ApiBody,
   ApiTags,
-  ApiBearerAuth,
+  // ApiBearerAuth,
 } from '@nestjs/swagger';
 import { LoginDto } from 'src/auth/dto/login.dto';
 import { RegisterDto } from 'src/auth/dto/register.dto';

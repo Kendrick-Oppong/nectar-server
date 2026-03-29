@@ -13,6 +13,7 @@ import * as crypto from 'node:crypto';
 import { PasswordResetToken, RefreshToken } from 'generated/prisma/client';
 import { ConfigService } from '@nestjs/config';
 import type { UserType } from 'types/auth';
+import { AUTH_CONSTANTS } from 'src/constants/auth.constants';
 
 @Injectable()
 export class AuthService {
@@ -131,7 +132,6 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
-      // Do not reveal whether the user exists — always return the same response
       return {
         success: true,
         message: 'If an account exists, a reset link was sent.',
@@ -253,14 +253,18 @@ export class AuthService {
       this.jwtService.signAsync(
         { sub: userId },
         {
-          secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+          secret: this.configService.get<string>(
+            AUTH_CONSTANTS.CONFIG_JWT_ACCESS_SECRET,
+          ),
           expiresIn: '15m',
         },
       ),
       this.jwtService.signAsync(
         { sub: userId },
         {
-          secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+          secret: this.configService.get<string>(
+            AUTH_CONSTANTS.CONFIG_JWT_REFRESH_SECRET,
+          ),
           expiresIn: '30d',
         },
       ),
@@ -295,7 +299,9 @@ export class AuthService {
       payload = await this.jwtService.verifyAsync<{ sub: string }>(
         refreshToken,
         {
-          secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+          secret: this.configService.get<string>(
+            AUTH_CONSTANTS.CONFIG_JWT_REFRESH_SECRET,
+          ),
         },
       );
     } catch {

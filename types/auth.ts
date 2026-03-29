@@ -28,3 +28,8 @@ export type UserType = Omit<
 export interface RequestWithUser extends Request {
   user: UserType;
 }
+
+export interface JwtPayload {
+  sub: string;
+  email: string;
+}

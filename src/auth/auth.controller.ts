@@ -1,12 +1,14 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Post,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from '../common/guards/local-auth.guard';
 import { RegisterDto } from './dto/register.dto';
@@ -22,14 +24,23 @@ import {
   ResetPasswordDocs,
   LogoutDocs,
   RefreshTokensDocs,
+  GetMeDocs,
   AuthApiTags,
 } from '../docs/swagger/auth.swagger';
 import { Public } from '../common/decorators/public.decorator';
 
 @AuthApiTags
+@Throttle({ default: { limit: 5, ttl: 60000 } })
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('me')
+  @GetMeDocs()
+  @HttpCode(HttpStatus.OK)
+  async getMe(@Req() req: RequestWithUser) {
+    return this.authService.getMe(req.user.id);
+  }
 
   @Public()
   @Post('register')

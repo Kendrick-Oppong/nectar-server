@@ -126,6 +126,34 @@ export class AuthService {
   }
 
   /**
+   * Get the current user's profile
+   */
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        avatarUrl: true,
+        phone: true,
+        isProfileComplete: true,
+        isActive: true,
+        selectedZoneId: true,
+        selectedAreaId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found.');
+    }
+
+    return user;
+  }
+
+  /**
    * Initiate forgot password flow — generate a trackable token and email it out
    */
   async forgotPassword(email: string) {
@@ -248,7 +276,7 @@ export class AuthService {
   /**
    * Generate a new JWT access + refresh token pair
    */
-  async generateTokens(userId: string) {
+  async generateTokens(userId: string, existingFamily?: string) {
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
         { sub: userId },
@@ -271,7 +299,7 @@ export class AuthService {
     ]);
 
     const hashedToken = await bcrypt.hash(refreshToken, 10);
-    const family = crypto.randomBytes(16).toString('hex');
+    const family = existingFamily || crypto.randomBytes(16).toString('hex');
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30);
 
@@ -335,11 +363,50 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token expired.');
     }
 
-    // Token rotation: delete the used token and issue a fresh pair
-    await this.prisma.refreshToken.delete({
+    if (matchedTokenRecord.isUsed) {
+      // THEFT DETECTED
+      // Revoke the entire family immediately.
+      await this.prisma.refreshToken.deleteMany({
+        where: { family: matchedTokenRecord.family },
+      });
+      throw new UnauthorizedException(
+        'Security alert: Token reuse detected. Sessions revoked',
+      );
+    }
+
+    // Token rotation: mark token as used instead of deleting, to allow us
+    // to detect theft if it gets used again.
+    await this.prisma.refreshToken.update({
       where: { id: matchedTokenRecord.id },
+      data: { isUsed: true },
     });
 
-    return this.generateTokens(userId);
+    // Fetch the latest user data to return alongside new tokens
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        avatarUrl: true,
+        phone: true,
+        isProfileComplete: true,
+        isActive: true,
+        selectedZoneId: true,
+        selectedAreaId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    const newTokens = await this.generateTokens(
+      userId,
+      matchedTokenRecord.family,
+    );
+
+    return {
+      user,
+      ...newTokens,
+    };
   }
 }

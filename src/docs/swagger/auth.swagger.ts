@@ -4,7 +4,7 @@ import {
   ApiResponse,
   ApiBody,
   ApiTags,
-  // ApiBearerAuth,
+  ApiBearerAuth,
 } from '@nestjs/swagger';
 import { LoginDto } from 'src/auth/dto/login.dto';
 import { RegisterDto } from 'src/auth/dto/register.dto';
@@ -90,6 +90,36 @@ export function RefreshTokensDocs() {
     ApiResponse({
       status: 401,
       description: 'Invalid or expired refresh token.',
+    }),
+  );
+}
+
+export function GetMeDocs() {
+  return applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({ summary: "Get the authenticated user's profile" }),
+    ApiResponse({
+      status: 200,
+      description: 'Current user profile returned.',
+      schema: {
+        example: {
+          id: 'cuid',
+          email: 'user@example.com',
+          name: 'John',
+          avatarUrl: null,
+          phone: null,
+          isProfileComplete: true,
+          isActive: true,
+          selectedZoneId: 'zone-id',
+          selectedAreaId: 'area-id',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }),
+    ApiResponse({
+      status: 401,
+      description: 'Unauthorized — invalid or missing JWT.',
     }),
   );
 }

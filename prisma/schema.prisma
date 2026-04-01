@@ -143,6 +143,9 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
 
+  /// Track if token has been used for rotation to detect theft
+  isUsed    Boolean  @default(false)
+
   @@index([userId])
   @@map("refresh_tokens")
 }

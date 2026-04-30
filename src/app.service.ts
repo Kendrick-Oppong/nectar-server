@@ -3,6 +3,6 @@ import { Injectable } from '@nestjs/common';
 @Injectable()
 export class AppService {
   getHello(): string {
-    return 'Nectar API is running!';
+    return 'Nectar API is running';
   }
 }
